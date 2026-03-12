@@ -301,11 +301,13 @@ export default function ClinicMap({
   cityKey,
   center,
   locality,
+  placeType,
   userLocation,
 }: {
   cityKey: string;
   center: [number, number];
   locality?: string;
+  placeType?: string;
   userLocation?: [number, number] | null;
 }) {
   const [markers, setMarkers] = useState<MarkerType[]>([]);
@@ -367,6 +369,9 @@ export default function ClinicMap({
     if (locality) {
       params.set("locality", locality);
     }
+    if (placeType && placeType !== "all") {
+      params.set("placeType", placeType);
+    }
     if (userLocation) {
       params.set("lat", String(userLocation[0]));
       params.set("lng", String(userLocation[1]));
@@ -424,7 +429,9 @@ export default function ClinicMap({
       });
 
     return () => controller.abort();
-  }, [cityKey, locality, userLocation]);
+  }, [cityKey, locality, placeType, userLocation]);
+
+  const placeLabel = placeType && placeType !== "all" ? toTitleCase(placeType) : "Places";
 
   return (
     <div className="grid h-full min-h-0 w-full grid-cols-1 overflow-hidden md:grid-cols-[minmax(0,1fr)_280px]">
@@ -476,8 +483,8 @@ export default function ClinicMap({
           <CardHeader className="px-3 py-2">
             <CardTitle className="text-sm font-semibold">
               {locality
-                ? `Hospitals in ${toTitleCase(locality)}`
-                : `Hospitals in ${toTitleCase(cityKey)}`}
+                ? `${placeLabel} in ${toTitleCase(locality)}`
+                : `${placeLabel} in ${toTitleCase(cityKey)}`}
             </CardTitle>
             <Badge variant="secondary" className="w-fit">
               {filteredHospitalList.length} results
@@ -489,7 +496,7 @@ export default function ClinicMap({
                 setHospitalSearch(event.target.value);
                 setVisibleListCount(INITIAL_LIST_RENDER);
               }}
-              placeholder="Search hospital..."
+              placeholder={`Search ${placeLabel.toLowerCase()}...`}
             />
           </CardHeader>
         </Card>

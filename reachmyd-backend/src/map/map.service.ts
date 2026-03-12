@@ -9,6 +9,10 @@ export class MapService {
     string,
     { expiresAt: number; value: string[] }
   >();
+  private readonly placeTypesCache = new Map<
+    string,
+    { expiresAt: number; value: string[] }
+  >();
   private readonly markersCache = new Map<
     string,
     { expiresAt: number; value: unknown[] }
@@ -44,6 +48,12 @@ export class MapService {
 
   private localityBlocklist =
     /\b(road|rd|street|st|lane|ln|cross|main|avenue|ave|signal|block|flr|floor|near|opp|opposite)\b/i;
+  private readonly excludedPlaceTypes = new Set([
+    "hospital",
+    "pharmacy",
+    "point_of_interest",
+    "establishment",
+  ]);
 
   private getCached<T>(
     cache: Map<string, { expiresAt: number; value: T }>,
@@ -114,6 +124,8 @@ export class MapService {
       lng,
       locality1: pick("md_locality1", "rmd_locality1"),
       locality2: pick("md_locality2", "rmd_locality2"),
+      type: pick("md_type", "rmd_type"),
+      googleType: pick("md_google_type", "rmd_google_type"),
     };
 
     this.cityColumnCache.set(tableName, config);
@@ -181,6 +193,19 @@ export class MapService {
     }
 
     if (this.localityBlocklist.test(value)) {
+      return null;
+    }
+
+    return value;
+  }
+
+  private normalizePlaceType(raw: string): string | null {
+    const value = this.normalizeWhitespace(raw).toLowerCase();
+    if (!value) {
+      return null;
+    }
+
+    if (this.excludedPlaceTypes.has(value)) {
       return null;
     }
 
@@ -302,6 +327,7 @@ export class MapService {
     city: string,
     limit?: string,
     locality?: string,
+    placeType?: string,
     lat?: string,
     lng?: string,
     radiusKm?: string,
@@ -310,6 +336,7 @@ export class MapService {
       city.toLowerCase(),
       limit ?? "",
       locality?.trim().toLowerCase() ?? "",
+      placeType?.trim().toLowerCase() ?? "",
       lat ?? "",
       lng ?? "",
       radiusKm ?? "",
@@ -385,6 +412,7 @@ export class MapService {
       cityBounds.lngMax,
     ];
     const cleanedLocality = locality?.trim();
+    const cleanedPlaceType = placeType?.trim();
     const parsedLat = Number.parseFloat(lat ?? "");
     const parsedLng = Number.parseFloat(lng ?? "");
     const hasUserLocation = Number.isFinite(parsedLat) && Number.isFinite(parsedLng);
@@ -429,6 +457,23 @@ export class MapService {
       }
     }
 
+    const typeColumns = [columns.type, columns.googleType].filter(
+      (value): value is string => Boolean(value),
+    );
+
+    if (cleanedPlaceType && cleanedPlaceType.toLowerCase() !== "all" && typeColumns.length > 0) {
+      const typeClauses = typeColumns.map(
+        (column) =>
+          `LOWER(TRIM(${this.quoteIdentifier(column)})) LIKE CONCAT('%', LOWER(TRIM(?)), '%')`,
+      );
+      query += `
+        AND (${typeClauses.join(" OR ")})
+      `;
+      for (let i = 0; i < typeColumns.length; i += 1) {
+        params.push(cleanedPlaceType);
+      }
+    }
+
     if (hasUserLocation) {
       const numericLatCol = `CAST(${latCol} AS DECIMAL(10,6))`;
       const numericLngCol = `CAST(${lngCol} AS DECIMAL(10,6))`;
@@ -451,6 +496,53 @@ export class MapService {
     this.setCached(this.markersCache, cacheKey, result);
     return result;
   }
+
+  async getPlaceTypesByCity(city: string) {
+    const cacheKey = city.toLowerCase();
+    const cached = this.getCached(this.placeTypesCache, cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const tableName = this.getTableName(city);
+    const columns = await this.getCityColumnConfig(tableName);
+    const primaryTypeColumn = columns.type;
+    const fallbackTypeColumn = columns.googleType;
+
+    if (!primaryTypeColumn && !fallbackTypeColumn) {
+      return [];
+    }
+
+    const runTypeQuery = async (column: string) => {
+      const rows: Array<{ placeType: string }> = await this.dataSource.query(`
+        SELECT DISTINCT TRIM(${this.quoteIdentifier(column)}) AS placeType
+        FROM ${tableName}
+        WHERE ${this.quoteIdentifier(column)} IS NOT NULL
+          AND TRIM(${this.quoteIdentifier(column)}) != ''
+      `);
+
+      return Array.from(
+        new Set(
+          rows
+            .map((row) => this.normalizePlaceType(row.placeType))
+            .filter((value): value is string => Boolean(value)),
+        ),
+      ).sort((a, b) => a.localeCompare(b));
+    };
+
+    let normalized: string[] = [];
+
+    if (primaryTypeColumn) {
+      normalized = await runTypeQuery(primaryTypeColumn);
+    }
+
+    if (normalized.length === 0 && fallbackTypeColumn) {
+      normalized = await runTypeQuery(fallbackTypeColumn);
+    }
+
+    this.setCached(this.placeTypesCache, cacheKey, normalized);
+    return normalized;
+  }
 }
 
 type CityColumnConfig = {
@@ -460,4 +552,6 @@ type CityColumnConfig = {
   lng: string;
   locality1: string | null;
   locality2: string | null;
+  type: string | null;
+  googleType: string | null;
 };

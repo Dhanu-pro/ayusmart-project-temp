@@ -10,15 +10,29 @@ export class MapController {
     @Param("city") city: string,
     @Query("limit") limit?: string,
     @Query("locality") locality?: string,
+    @Query("placeType") placeType?: string,
     @Query("lat") lat?: string,
     @Query("lng") lng?: string,
     @Query("radiusKm") radiusKm?: string,
   ) {
-    return this.mapService.getMarkersByCity(city, limit, locality, lat, lng, radiusKm);
+    return this.mapService.getMarkersByCity(
+      city,
+      limit,
+      locality,
+      placeType,
+      lat,
+      lng,
+      radiusKm,
+    );
   }
 
   @Get(":city/localities")
   async getLocalities(@Param("city") city: string) {
     return this.mapService.getLocalitiesByCity(city);
+  }
+
+  @Get(":city/place-types")
+  async getPlaceTypes(@Param("city") city: string) {
+    return this.mapService.getPlaceTypesByCity(city);
   }
 }

@@ -13,10 +13,17 @@ const ClinicMap = dynamic(() => import("@/components/ClinicMap.client"), {
   ssr: false,
 });
 
+const EXCLUDED_PLACE_TYPES = [
+  "hospital",
+  "pharmacy",
+  "point_of_interest",
+  "establishment",
+] as const;
+
 function toTitleCase(value: string): string {
   return value
     .toLowerCase()
-    .split(" ")
+    .split(/[\s_]+/)
     .filter(Boolean)
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ");
@@ -52,12 +59,15 @@ function dedupeLocalities(items: string[]): string[] {
 export default function Home() {
   const [cityKey, setCityKey] = useState<keyof typeof CITIES>("bengaluru");
   const [localities, setLocalities] = useState<string[]>([]);
+  const [placeTypes, setPlaceTypes] = useState<string[]>([]);
+  const [placeType, setPlaceType] = useState("all");
   const [locality, setLocality] = useState("");
   const [localitySearch, setLocalitySearch] = useState("");
   const [mapCenter, setMapCenter] = useState<[number, number] | null>(null);
   const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
   const [locationStatus, setLocationStatus] = useState<string | null>(null);
   const [isLoadingLocalities, setIsLoadingLocalities] = useState(true);
+  const [isLoadingPlaceTypes, setIsLoadingPlaceTypes] = useState(true);
 
   const city = CITIES[cityKey];
   const activeCenter: [number, number] = mapCenter ?? [city.lat, city.lng];
@@ -104,6 +114,66 @@ export default function Home() {
 
     return () => controller.abort();
   }, [cityKey]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    setIsLoadingPlaceTypes(true);
+
+    fetch(`http://localhost:3000/map/${cityKey}/place-types`, {
+      signal: controller.signal,
+    })
+      .then((res) => {
+        if (!res.ok) {
+          throw new Error(`Failed to load place types (${res.status})`);
+        }
+        return res.json();
+      })
+      .then((data: string[]) => {
+        const normalized = Array.from(
+          new Set(
+            data
+              .map((item) => item.trim().toLowerCase())
+              .filter(Boolean)
+              .filter(
+                (item) =>
+                  !EXCLUDED_PLACE_TYPES.includes(
+                    item as (typeof EXCLUDED_PLACE_TYPES)[number],
+                  ),
+              ),
+          ),
+        ).sort((a, b) => a.localeCompare(b));
+
+        setPlaceTypes(normalized);
+        setPlaceType((current) => {
+          if (
+            current === "all" ||
+            normalized.some((item) => item === current.toLowerCase())
+          ) {
+            return current;
+          }
+
+          return "all";
+        });
+      })
+      .catch((err: unknown) => {
+        if (err instanceof DOMException && err.name === "AbortError") {
+          return;
+        }
+
+        setPlaceTypes([]);
+        setPlaceType("all");
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setIsLoadingPlaceTypes(false);
+        }
+      });
+
+    return () => controller.abort();
+  }, [cityKey]);
+
+  const placeTypeLabel = placeType === "all" ? "places" : toTitleCase(placeType);
 
   const distanceInKm = (
     lat1: number,
@@ -174,7 +244,7 @@ export default function Home() {
     <div className="h-screen flex flex-col">
       <Card className="relative z-[9999] m-2 mb-1">
         <CardContent className="space-y-2 p-2.5">
-          <div className="grid items-center gap-2 lg:grid-cols-[170px_minmax(220px,1fr)_minmax(220px,1fr)_auto_auto_auto]">
+          <div className="grid items-center gap-2 lg:grid-cols-[170px_minmax(220px,1fr)_minmax(220px,1fr)_minmax(180px,1fr)_auto_auto_auto]">
             <Select
               className="h-9 !w-[170px]"
               value={cityKey}
@@ -185,6 +255,7 @@ export default function Home() {
                 setIsLoadingLocalities(true);
                 setLocality("");
                 setLocalitySearch("");
+                setPlaceType("all");
                 setLocationStatus(null);
               }}
             >
@@ -222,6 +293,22 @@ export default function Home() {
               ))}
             </Select>
 
+            <Select
+              className="h-9"
+              value={placeType}
+              onChange={(e) => setPlaceType(e.target.value)}
+              disabled={isLoadingPlaceTypes}
+            >
+              <option value="all">
+                {isLoadingPlaceTypes ? "Loading types..." : "All place types"}
+              </option>
+              {placeTypes.map((item) => (
+                <option key={item} value={item}>
+                  {toTitleCase(item)}
+                </option>
+              ))}
+            </Select>
+
             <Button
               type="button"
               variant="outline"
@@ -249,8 +336,8 @@ export default function Home() {
 
           <div className="text-xs text-slate-600">
             {locality
-              ? `Showing hospitals in ${locality}.`
-              : `Showing hospitals across ${city.name}.`}
+              ? `Showing ${placeTypeLabel} in ${locality}.`
+              : `Showing ${placeTypeLabel} across ${city.name}.`}
           </div>
 
           {hasNoSearchResults && (
@@ -272,6 +359,7 @@ export default function Home() {
           cityKey={cityKey}
           center={activeCenter}
           locality={locality}
+          placeType={placeType}
           userLocation={userLocation}
         />
       </div>
