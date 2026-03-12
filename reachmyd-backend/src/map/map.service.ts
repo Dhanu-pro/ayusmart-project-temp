@@ -212,6 +212,160 @@ export class MapService {
     return value;
   }
 
+  private chooseMarkerLocality(
+    locality1?: string | null,
+    locality2?: string | null,
+    city?: string,
+  ): string {
+    const candidates = [locality2, locality1]
+      .map((value) => (value == null ? null : this.cleanLocality(String(value))))
+      .filter((value): value is string => Boolean(value));
+
+    if (candidates.length === 0) {
+      return city ? this.cityNameMap[city.toLowerCase()] ?? "Location unavailable" : "Location unavailable";
+    }
+
+    let best = candidates[0];
+    for (const candidate of candidates.slice(1)) {
+      best = this.preferReadableLocality(best, candidate);
+    }
+
+    return best;
+  }
+
+  private normalizeMarkerName(raw: string | null | undefined): string {
+    const value = this.normalizeWhitespace(String(raw ?? ""));
+    return value || "Unknown";
+  }
+
+  private distanceInKm(
+    lat1: number,
+    lng1: number,
+    lat2: number,
+    lng2: number,
+  ): number {
+    const toRad = (value: number) => (value * Math.PI) / 180;
+    const dLat = toRad(lat2 - lat1);
+    const dLng = toRad(lng2 - lng1);
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+
+    return 2 * 6371 * Math.asin(Math.sqrt(a));
+  }
+
+  private dedupeMarkerRows(
+    rows: Array<{
+      md_id: number | string | null;
+      md_name: string | null;
+      md_l1: string | number | null;
+      md_l2: string | number | null;
+      locality1?: string | null;
+      locality2?: string | null;
+      locality?: string | null;
+    }>,
+    city: string,
+  ) {
+    const exactById = new Map<string, (typeof rows)[number]>();
+
+    for (const row of rows) {
+      const idKey = String(row.md_id ?? "").trim();
+      if (!idKey) {
+        continue;
+      }
+
+      const existing = exactById.get(idKey);
+      if (!existing) {
+        exactById.set(idKey, row);
+        continue;
+      }
+
+      const currentLocality = this.chooseMarkerLocality(
+        existing.locality1,
+        existing.locality2,
+        city,
+      );
+      const nextLocality = this.chooseMarkerLocality(row.locality1, row.locality2, city);
+      exactById.set(
+        idKey,
+        this.preferReadableLocality(currentLocality, nextLocality) === nextLocality
+          ? row
+          : existing,
+      );
+    }
+
+    const sourceRows = exactById.size > 0 ? Array.from(exactById.values()) : rows;
+    const groupedByName = new Map<
+      string,
+      Array<{
+        md_id: number | string | null;
+        md_name: string;
+        md_l1: string | number | null;
+        md_l2: string | number | null;
+        locality: string;
+      }>
+    >();
+
+    for (const row of sourceRows) {
+      const lat = Number.parseFloat(String(row.md_l1 ?? ""));
+      const lng = Number.parseFloat(String(row.md_l2 ?? ""));
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        continue;
+      }
+
+      const name = this.normalizeMarkerName(row.md_name);
+      const locality = this.chooseMarkerLocality(row.locality1, row.locality2, city);
+      const nameKey = name.toLowerCase();
+      const candidate = {
+        md_id: row.md_id,
+        md_name: name,
+        md_l1: row.md_l1,
+        md_l2: row.md_l2,
+        locality,
+      };
+
+      const existingEntries = groupedByName.get(nameKey) ?? [];
+      let merged = false;
+
+      for (let index = 0; index < existingEntries.length; index += 1) {
+        const existing = existingEntries[index];
+        const existingLat = Number.parseFloat(String(existing.md_l1 ?? ""));
+        const existingLng = Number.parseFloat(String(existing.md_l2 ?? ""));
+        if (!Number.isFinite(existingLat) || !Number.isFinite(existingLng)) {
+          continue;
+        }
+
+        const distanceKm = this.distanceInKm(lat, lng, existingLat, existingLng);
+        if (distanceKm > 0.08) {
+          continue;
+        }
+
+        const existingId = Number.parseInt(String(existing.md_id ?? ""), 10);
+        const candidateId = Number.parseInt(String(candidate.md_id ?? ""), 10);
+        const preferredLocality =
+          this.preferReadableLocality(existing.locality, candidate.locality) === candidate.locality
+            ? candidate.locality
+            : existing.locality;
+
+        existingEntries[index] =
+          Number.isFinite(candidateId) &&
+          (!Number.isFinite(existingId) || candidateId > existingId)
+            ? { ...candidate, locality: preferredLocality }
+            : { ...existing, locality: preferredLocality };
+        merged = true;
+        break;
+      }
+
+      if (!merged) {
+        existingEntries.push(candidate);
+      }
+
+      groupedByName.set(nameKey, existingEntries);
+    }
+
+    return Array.from(groupedByName.values()).flat();
+  }
+
   private getTableName(city: string): string {
     const tableName = this.cityTableMap[city.toLowerCase()];
 
@@ -358,30 +512,12 @@ export class MapService {
       ? `${this.quoteIdentifier(columns.name)} AS md_name`
       : `'Unknown' AS md_name`;
 
-    let localitySelect = `'Location unavailable' AS locality`;
-    if (columns.locality1 && columns.locality2) {
-      localitySelect = `
-        COALESCE(
-          NULLIF(TRIM(${this.quoteIdentifier(columns.locality1)}), ''),
-          NULLIF(TRIM(${this.quoteIdentifier(columns.locality2)}), ''),
-          'Location unavailable'
-        ) AS locality
-      `;
-    } else if (columns.locality1) {
-      localitySelect = `
-        COALESCE(
-          NULLIF(TRIM(${this.quoteIdentifier(columns.locality1)}), ''),
-          'Location unavailable'
-        ) AS locality
-      `;
-    } else if (columns.locality2) {
-      localitySelect = `
-        COALESCE(
-          NULLIF(TRIM(${this.quoteIdentifier(columns.locality2)}), ''),
-          'Location unavailable'
-        ) AS locality
-      `;
-    }
+    const locality1Select = columns.locality1
+      ? `${this.quoteIdentifier(columns.locality1)} AS locality1`
+      : `NULL AS locality1`;
+    const locality2Select = columns.locality2
+      ? `${this.quoteIdentifier(columns.locality2)} AS locality2`
+      : `NULL AS locality2`;
 
     const parsedLimit = Number.parseInt(limit ?? "3000", 10);
     const safeLimit = Number.isFinite(parsedLimit)
@@ -394,7 +530,8 @@ export class MapService {
         ${nameSelect},
         ${latCol} AS md_l1,
         ${lngCol} AS md_l2,
-        ${localitySelect}
+        ${locality1Select},
+        ${locality2Select}
       FROM ${tableName}
       WHERE
         ${latCol} IS NOT NULL
@@ -492,7 +629,8 @@ export class MapService {
     }
     params.push(safeLimit);
 
-    const result = await this.dataSource.query(query, params);
+    const rows = await this.dataSource.query(query, params);
+    const result = this.dedupeMarkerRows(rows, city);
     this.setCached(this.markersCache, cacheKey, result);
     return result;
   }

@@ -70,23 +70,27 @@ function toTitleCase(value: string): string {
 }
 
 function dedupeMarkers(items: MarkerType[]): MarkerType[] {
-  const seen = new Set<string>();
-  const unique: MarkerType[] = [];
+  const uniqueByFingerprint = new Map<string, MarkerType>();
 
   for (const item of items) {
-    const fingerprint = [
-      item.name.trim().toLowerCase(),
-      item.locality.trim().toLowerCase(),
-      item.lat.toFixed(5),
-      item.lng.toFixed(5),
-    ].join("|");
+    const normalizedId = String(item.id ?? "")
+      .trim()
+      .toLowerCase();
+    const fingerprint = normalizedId && normalizedId !== "marker"
+      ? `id:${normalizedId}`
+      : [
+          item.name.trim().toLowerCase(),
+          item.locality.trim().toLowerCase(),
+          item.lat.toFixed(5),
+          item.lng.toFixed(5),
+        ].join("|");
 
-    if (seen.has(fingerprint)) continue;
-    seen.add(fingerprint);
-    unique.push(item);
+    if (!uniqueByFingerprint.has(fingerprint)) {
+      uniqueByFingerprint.set(fingerprint, item);
+    }
   }
 
-  return unique;
+  return Array.from(uniqueByFingerprint.values());
 }
 
 function RecenterMap({ center }: { center: [number, number] }) {
